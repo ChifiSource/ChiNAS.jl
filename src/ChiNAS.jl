@@ -5,6 +5,8 @@ using ReplMaker
 using Toolips.Components
 import Base: in, getindex
 
+DLS = Base.Downloads()
+
 CONNECTED = "":0
 
 # types
@@ -49,7 +51,7 @@ MANAGER = NASManager("", "", Vector{AbstractRepository}(), Vector{NASUser}(), "t
 function host(ip::String, port::Int64; path::String = pwd(), hostname::String = "chiNAS")
     # read the path, make config, build the routes
     path = replace(path, "\\" => "/")
-    MANAGER.home_dir = path * "/"
+    MANAGER.home_dir = path * "/" * "home/"
     dir_read::Vector{String} = readdir(path)
     if ~("config.toml" in dir_read)
         config_path::String = path * "/config.toml"
@@ -115,7 +117,12 @@ end
 function send_to_connected(line::String)
     split_cmd::Vector{SubString} = split(line, " ")
     if split_cmd[1] == "download"
-        download_url = Toolips.post("http://$(CONNECTED.ip):$(CONNECTED.port)", "DOWNLOAD:$(split_cmd[2])")
+        download_url = Toolips.post("http://$(CONNECTED.ip):$(CONNECTED.port)", "download;$(split_cmd[2])")
+        path = pwd()
+        if length(split_cmd) > 2
+            path = split_cmd[3]
+        end
+        DLS.download("http://$(CONNECTED.ip):$(CONNECTED.port)" * download_url, path * "/$(split_cmd[2])")
         return
     end
     response = Toolips.post("http://$(CONNECTED.ip):$(CONNECTED.port)", replace(line, " " => ";"))
@@ -157,6 +164,10 @@ main = route("/") do c::Toolips.AbstractConnection
     f = findfirst(";", request)
     if length(command_split) == 1 || isnothing(f) || command_split[1] == "ls"
         current_dir_files = readdir(replace(user.wd, "~/" => MANAGER.home_dir * "/"))
+        if length(current_dir_files) == 0
+            write!(c, "no files found in this directory")
+            return
+        end
         write!(c, join([filename for filename in current_dir_files], ";"))
         return
     end
@@ -171,16 +182,54 @@ function do_command(user::NASUser, command::NASCommand{:cd}, args::SubString ...
     if selected == ".."
         if user.wd != "~/"
             wdsplit = split(user.wd, "/")
-            user.wd = join(wdsplit[1:length(wdsplit) - 1], "/")
+            if length(wdsplit) > 2
+                user.wd = join(wdsplit[1:length(wdsplit) - 2], "/") * "/"
+            else
+                user.wd = "~/"
+            end
+        else
+            println(user.wd)
         end
+        return(user.wd)::String
     end
     current_dir_files = readdir(replace(user.wd, "~/" => MANAGER.home_dir * "/"))
     if ~(selected in current_dir_files)
         return("ERROR: Directory does not exist to change into.")
     end
     user.wd = user.wd * selected * "/"
+    user.wd::String
 end
 
+function do_command(user::NASUser, command::NASCommand{:mkdir}, args::SubString ...)
+    mkdir(replace(user.wd, "~/" => MANAGER.home_dir * "/") * args[1])
+    return("made directory: $(user.wd * args[1])")
+end
+
+function do_command(user::NASUser, command::NASCommand{:rmdir}, args::SubString ...)
+    rmdir(replace(user.wd, "~/" => MANAGER.home_dir * "/") * args[1])
+    return("removed directory: $(user.wd * args[1])")
+end
+
+function do_command(user::NASUser, command::NASCommand{:rm}, args::SubString ...)
+    rm(replace(user.wd, "~/" => MANAGER.home_dir * "/") * args[1])
+    return("removed file: $(user.wd * args[1])")
+end
+
+function do_command(user::NASUser, command::NASCommand{:touch}, args::SubString ...)
+    touch(replace(user.wd, "~/" => MANAGER.home_dir * "/") * args[1])
+    return("created file: $(user.wd * args[1])")
+end
+
+function do_command(user::NASUser, command::NASCommand{:download}, args::SubString ...)
+    route_path::String = "/" * Toolips.gen_ref(5)
+    new_r = route(route_path) do c::AbstractConnection
+        write!(c, read(replace(user.wd, "~/" => MANAGER.home_dir * "/") * args[1], String))
+        f = findfirst(r -> r.path == route_path, c.routes)
+        deleteat!(c.routes, f)
+    end
+    push!(ChiNAS.routes, new_r)
+    return(route_path)::String
+end
 
 # make sure to export!
 export main, default_404, logger, MANAGER
