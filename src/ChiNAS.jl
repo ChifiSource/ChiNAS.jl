@@ -32,12 +32,12 @@ end
 mutable struct NASCommand{T <: Any} end
 
 function in(vec::Vector{NASUser}, name::String)
-    f = findfirst(name -> name == user.ip, vec)
+    f = findfirst(user -> user.ip == name, vec)
     ~(isnothing(f))::Bool
 end
 
 function getindex(vec::Vector{NASUser}, name::String)
-    f = findfirst(name -> name == user.ip, vec)
+    f = findfirst(user -> user.ip == name, vec)
     vec[f]::NASUser
 end
 
@@ -49,6 +49,7 @@ MANAGER = NASManager("", "", Vector{AbstractRepository}(), Vector{NASUser}(), "t
 function host(ip::String, port::Int64; path::String = pwd(), hostname::String = "chiNAS")
     # read the path, make config, build the routes
     path = replace(path, "\\" => "/")
+    MANAGER.home_dir = path * "/"
     dir_read::Vector{String} = readdir(path)
     if ~("config.toml" in dir_read)
         config_path::String = path * "/config.toml"
@@ -66,11 +67,9 @@ function host(ip::String, port::Int64; path::String = pwd(), hostname::String = 
     end for user in keys(config["users"])]
     # start the server, add the routes
     start!(ChiNAS, ip:port)
-    println("ChiNAS is now active!")
     # key
     secret::String = Toolips.gen_ref(5)
     secret_path::String = path * "/secret.txt"
-    println("secret key: ", secret)
     if ~("secret.txt" in dir_read)
         touch(secret_path)
     else
@@ -79,6 +78,8 @@ function host(ip::String, port::Int64; path::String = pwd(), hostname::String = 
     open(path * "/secret.txt", "w") do o::IOStream
         write(o, secret)
     end
+    println("secret key: ", secret)
+    MANAGER.secret = secret
 end
 
 function connect(ip::String, port::Int64; path::String = pwd())
@@ -96,33 +97,28 @@ function connect(ip::String, port::Int64; path::String = pwd())
         name = readline()
         third_response = Toolips.get("http://$ip:$port/?name=$name")
         if ~(third_response == "success")
+            println(third_response)
             print("failure. name taken? for now we give up here.")
             return
         end
         return(connect(ip, port, path = path))
     end
     # regular connection
-    server_name = Toolips.get("http://$ip:$port/hostname")
-    CONNECTED = ip:port
-    interpret_file_response(init_response)
+    global CONNECTED = ip:port
     initrepl(send_to_connected,
-                prompt_text="$server_name >",
-                prompt_color=:lightblue,
+                prompt_text="$(ip):$(port) >",
+                prompt_color=:cyan,
                 start_key="-",
                 mode_name="Remote Filesystem")
-end
-
-function interpret_file_response()
-
 end
 
 function send_to_connected(line::String)
     split_cmd::Vector{SubString} = split(line, " ")
     if split_cmd[1] == "download"
-        download_url = Toolips.post(CONNECTED, "DOWNLOAD:$(split_cmd[2])")
+        download_url = Toolips.post("http://$(CONNECTED.ip):$(CONNECTED.port)", "DOWNLOAD:$(split_cmd[2])")
         return
     end
-    response = Toolips.post(CONNECTED, replace(line, " " => ";"))
+    response = Toolips.post("http://$(CONNECTED.ip):$(CONNECTED.port)", replace(line, " " => ";"))
     println(replace(response, ";" => "\n"))
 end
 
@@ -134,11 +130,12 @@ main = route("/") do c::Toolips.AbstractConnection
         if args[:secret] == MANAGER.secret
             new_user = NASUser(client_ip, "", "~/")
             push!(MANAGER.users, new_user)
-            write!(c, "confirmed")
+            write!(c, "success")
             return
         end
         write!(c, "denied")
-    elseif :name in keys(args) && client_ip in MANAGER.users
+        return
+    elseif :name in keys(args)
         name::String = args[:name]
         f = findfirst(user -> user.name == name, MANAGER.users)
         if isnothing(f)
@@ -159,7 +156,7 @@ main = route("/") do c::Toolips.AbstractConnection
     command_split = split(request, ";")
     f = findfirst(";", request)
     if length(command_split) == 1 || isnothing(f) || command_split[1] == "ls"
-        current_dir_files = readdir(replace(user.wd, "~/" => NASManager.home_dir * "/"))
+        current_dir_files = readdir(replace(user.wd, "~/" => MANAGER.home_dir * "/"))
         write!(c, join([filename for filename in current_dir_files], ";"))
         return
     end
@@ -177,7 +174,7 @@ function do_command(user::NASUser, command::NASCommand{:cd}, args::SubString ...
             user.wd = join(wdsplit[1:length(wdsplit) - 1], "/")
         end
     end
-    current_dir_files = readdir(replace(user.wd, "~/" => NASManager.home_dir * "/"))
+    current_dir_files = readdir(replace(user.wd, "~/" => MANAGER.home_dir * "/"))
     if ~(selected in current_dir_files)
         return("ERROR: Directory does not exist to change into.")
     end
