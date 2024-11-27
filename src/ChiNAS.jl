@@ -300,9 +300,29 @@ function do_command(user::NASUser, command::NASCommand{:tree}, dir::String ...)
     else
         dir = real_wd * dir[1]
     end
+    rec_files = grab_recursive_files(real_wd * dir)
+    [begin 
+        
+    end for file in rec_files]
 end
 
-
+function grab_recursive_files(path::String)
+    dirs::Vector{String} = readdir(path)
+    all_names::Vector{String} = []
+    [begin
+        fpath = "$path/" * directory
+        if isfile(fpath)
+            push!(all_names, fpath)
+        else
+            if ~(fpath in all_names)
+                newrs::Vector{String} = grab_recursive_files(fpath)
+                push!(newrs, fpath)
+                all_names = vcat(all_names, newrs)
+            end
+        end
+    end for directory in dirs]
+    all_names::Vector{String}
+end
 
 # make sure to export!
 export main, default_404, logger, MANAGER
