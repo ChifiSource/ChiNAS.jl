@@ -130,7 +130,7 @@ function send_to_connected(line::String)
         end
         DLS.download("http://$(CONNECTED.ip):$(CONNECTED.port)" * download_url, path * "/$(split_cmd[2])")
         return
-    elseif split_cmd[1] == "" || split_cmd[1] == "ls"
+    elseif split_cmd[1] == "ls"
         response = Toolips.post("http://$(CONNECTED.ip):$(CONNECTED.port)", replace(line, " " => ";"))
         print(Toolips.Crayon(foreground = :white))
         for file in split(response, ";")
@@ -143,6 +143,10 @@ function send_to_connected(line::String)
                 print(components[1] * ": ", components[3] * "\n")
             end
         end
+        return
+    elseif split_cmd[1] == "tree"
+        response = Toolips.post("http://$(CONNECTED.ip):$(CONNECTED.port)", replace(line, " " => ";"))
+        println(replace(response, ";" => "\n"))
         return
     end
     response = Toolips.post("http://$(CONNECTED.ip):$(CONNECTED.port)", replace(line, " " => ";"))
@@ -182,7 +186,11 @@ main = route("/") do c::Toolips.AbstractConnection
     request = get_post(c)
     command_split = split(request, ";")
     f = findfirst(";", request)
-    if length(command_split) == 1 || isnothing(f) || command_split[1] == "ls"
+    list = false
+    if request == ""
+        list = true
+    end
+    if command_split[1] == "ls" || list
         real_dir::String = replace(user.wd, "~/" => MANAGER.home_dir)
         if real_dir[length(real_dir)] != '/'
             real_dir = real_dir * "/"
@@ -281,47 +289,47 @@ function do_command(user::NASUser, command::NASCommand{:download}, args::SubStri
     return(route_path)::String
 end
 
-function do_command(user::NASUser, command::NASCommand{:cp}, from::String, to::String)
+function do_command(user::NASUser, command::NASCommand{:cp}, from::SubString, to::SubString)
     real_wd::String = replace(user.wd, "~/" => MANAGER.home_dir * "/")
     cp(real_wd * from, real_wd * to)
     return("copied file: $(user.wd * from) -> $(user.wd * to)")
 end
 
-function do_command(user::NASUser, command::NASCommand{:mv}, from::String, to::String)
+function do_command(user::NASUser, command::NASCommand{:mv}, from::SubString, to::SubString)
     real_wd::String = replace(user.wd, "~/" => MANAGER.home_dir * "/")
     mv(real_wd * from, real_wd * to)
     return("file moved: $(user.wd * from) -> $(user.wd * to)")
 end
 
-function do_command(user::NASUser, command::NASCommand{:tree}, dir::String ...)
-    real_wd::String = replace(user.wd, "~/" => MANAGER.home_dir * "/")
+function do_command(user::NASUser, command::NASCommand{:tree}, dir::SubString ...)
+    real_wd::String = replace(user.wd, "~/" => MANAGER.home_dir)
     if length(dir) == 0
         dir = real_wd
     else
         dir = real_wd * dir[1]
     end
-    rec_files = grab_recursive_files(real_wd * dir)
-    [begin 
-        
-    end for file in rec_files]
+    if dir[length(dir)] == '/'
+        dir = dir[1:length(dir) - 1]
+    end
+    grab_recursive_files(user.wd, dir)
 end
 
-function grab_recursive_files(path::String)
+function grab_recursive_files(wd::String, path::String)
     dirs::Vector{String} = readdir(path)
     all_names::Vector{String} = []
+    final_string = ""
     [begin
         fpath = "$path/" * directory
         if isfile(fpath)
-            push!(all_names, fpath)
+            final_string = final_string * replace(fpath, "$path/" => wd) * "|1;"
         else
             if ~(fpath in all_names)
-                newrs::Vector{String} = grab_recursive_files(fpath)
-                push!(newrs, fpath)
-                all_names = vcat(all_names, newrs)
+                newrs::String = grab_recursive_files(wd * directory * "/", fpath)
+                final_string = final_string * replace(fpath, "$path/" => wd) * "|0;" * newrs
             end
         end
     end for directory in dirs]
-    all_names::Vector{String}
+    final_string
 end
 
 # make sure to export!
