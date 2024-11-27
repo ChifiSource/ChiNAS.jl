@@ -51,7 +51,7 @@ MANAGER = NASManager("", "", Vector{AbstractRepository}(), Vector{NASUser}(), "t
 function host(ip::String, port::Int64; path::String = pwd(), hostname::String = "chiNAS")
     # read the path, make config, build the routes
     path = replace(path, "\\" => "/")
-    MANAGER.home_dir = path * "/" * "home/"
+    MANAGER.home_dir = path * "/home/"
     dir_read::Vector{String} = readdir(path)
     if ~("config.toml" in dir_read)
         config_path::String = path * "/config.toml"
@@ -60,6 +60,12 @@ function host(ip::String, port::Int64; path::String = pwd(), hostname::String = 
         open(config_path, "w") do o::IO
             TOML.print(o, basic_dct)
         end
+    end
+    if ~("home" in dir_read)
+        mkdir(MANAGER.home_dir)
+    end
+    if ~("repositories" in dir_read)
+        mkdir(MANAGER.path * "/respositories")
     end
     config = TOML.parse(read(path * "/config.toml", String))
     # get user and repo data
@@ -124,6 +130,20 @@ function send_to_connected(line::String)
         end
         DLS.download("http://$(CONNECTED.ip):$(CONNECTED.port)" * download_url, path * "/$(split_cmd[2])")
         return
+    elseif split_cmd[1] == "" || split_cmd[1] == "ls"
+        response = Toolips.post("http://$(CONNECTED.ip):$(CONNECTED.port)", replace(line, " " => ";"))
+        print(Toolips.Crayon(foreground = :white))
+        for file in split(response, ";")
+            components = split(file, "|")
+            if components[2] == "0"
+                print(Toolips.Crayon(foreground = :blue))
+                print(components[1] * ": ", components[3] * " items\n")
+            else
+                print(Toolips.Crayon(foreground = :white))
+                print(components[1] * ": ", components[3] * "\n")
+            end
+        end
+        return
     end
     response = Toolips.post("http://$(CONNECTED.ip):$(CONNECTED.port)", replace(line, " " => ";"))
     println(replace(response, ";" => "\n"))
@@ -163,12 +183,17 @@ main = route("/") do c::Toolips.AbstractConnection
     command_split = split(request, ";")
     f = findfirst(";", request)
     if length(command_split) == 1 || isnothing(f) || command_split[1] == "ls"
-        current_dir_files = readdir(replace(user.wd, "~/" => MANAGER.home_dir * "/"))
+        real_dir::String = replace(user.wd, "~/" => MANAGER.home_dir)
+        if real_dir[length(real_dir)] != '/'
+            real_dir = real_dir * "/"
+        end
+        current_dir_files = readdir(real_dir)
         if length(current_dir_files) == 0
             write!(c, "no files found in this directory")
             return
         end
-        write!(c, join([filename for filename in current_dir_files], ";"))
+        file_dims = (make_filedata("", filename, real_dir * filename) for filename in current_dir_files)
+        write!(c, join(file_dims, ";"))
         return
     end
     write!(c, 
@@ -176,6 +201,31 @@ main = route("/") do c::Toolips.AbstractConnection
     command_split[2:length(command_split)] ...))
 end
 
+function make_filedata(wd::String, filename::String, real_path::String)
+    is_file = isfile(real_path)
+    file_size = ""
+    if is_file
+        file_size = filesize(real_path)
+        if file_size > 1000000000
+            file_size = "$(file_size / 1000000000) GB"
+        elseif file_size > 1000000
+            file_size = "$(file_size / 1000000000) MB"
+        elseif file_size > 1000
+            file_size = "$(file_size / 1000000000) KB"
+        else
+            file_size = "$file_size B"
+        end
+    else
+        n_files = length(readdir(real_path))
+        return(join((filename, string(Int64(is_file)), n_files), "|")::String)
+    end
+    if contains(wd, "/")
+        filename = replace(wd, "/" => ".") * filename
+    end
+    join((filename, string(Int64(is_file)), file_size), "|")::String
+end
+
+# dirname|0||n_files|;
 
 function do_command(user::NASUser, command::NASCommand{:cd}, args::SubString ...)
     selected::String = string(args[1])
@@ -230,6 +280,29 @@ function do_command(user::NASUser, command::NASCommand{:download}, args::SubStri
     push!(ChiNAS.routes, new_r)
     return(route_path)::String
 end
+
+function do_command(user::NASUser, command::NASCommand{:cp}, from::String, to::String)
+    real_wd::String = replace(user.wd, "~/" => MANAGER.home_dir * "/")
+    cp(real_wd * from, real_wd * to)
+    return("copied file: $(user.wd * from) -> $(user.wd * to)")
+end
+
+function do_command(user::NASUser, command::NASCommand{:mv}, from::String, to::String)
+    real_wd::String = replace(user.wd, "~/" => MANAGER.home_dir * "/")
+    mv(real_wd * from, real_wd * to)
+    return("file moved: $(user.wd * from) -> $(user.wd * to)")
+end
+
+function do_command(user::NASUser, command::NASCommand{:tree}, dir::String ...)
+    real_wd::String = replace(user.wd, "~/" => MANAGER.home_dir * "/")
+    if length(dir) == 0
+        dir = real_wd
+    else
+        dir = real_wd * dir[1]
+    end
+end
+
+
 
 # make sure to export!
 export main, default_404, logger, MANAGER
