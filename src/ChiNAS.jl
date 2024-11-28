@@ -13,9 +13,10 @@ CONNECTED = "":0
 abstract type AbstractRepository end
 
 mutable struct Repository <: AbstractRepository
-    uri::String
-    file_count::Int64
-end
+    category::String
+    name::String
+    url::String
+ end
 
 mutable struct NASUser
     ip::String
@@ -29,6 +30,7 @@ mutable struct NASManager <: Toolips.AbstractExtension
     repos::Vector{AbstractRepository}
     users::Vector{NASUser}
     secret::String
+    repo_dir::String
 end
 
 mutable struct NASCommand{T <: Any} end
@@ -46,12 +48,13 @@ end
 # extensions
 logger = Toolips.Logger()
 
-MANAGER = NASManager("", "", Vector{AbstractRepository}(), Vector{NASUser}(), "testpass")
+MANAGER = NASManager("", "", Vector{AbstractRepository}(), Vector{NASUser}(), "testpass", "")
 
 function host(ip::String, port::Int64; path::String = pwd(), hostname::String = "chiNAS")
     # read the path, make config, build the routes
     path = replace(path, "\\" => "/")
     MANAGER.home_dir = path * "/home/"
+    MANAGER.repo_dir = path * "/repositories/"
     dir_read::Vector{String} = readdir(path)
     if ~("config.toml" in dir_read)
         config_path::String = path * "/config.toml"
@@ -65,7 +68,7 @@ function host(ip::String, port::Int64; path::String = pwd(), hostname::String = 
         mkdir(MANAGER.home_dir)
     end
     if ~("repositories" in dir_read)
-        mkdir(MANAGER.path * "/respositories")
+        mkdir(MANAGER.path * "/repositories")
     end
     config = TOML.parse(read(path * "/config.toml", String))
     # get user and repo data
@@ -73,6 +76,12 @@ function host(ip::String, port::Int64; path::String = pwd(), hostname::String = 
         info = config["users"][user]
         NASUser(info["ip"], user, info["wd"])
     end for user in keys(config["users"])]
+    if "repos" in keys(config)
+        MANAGER.repos = [begin
+            repodata = repository[2]
+            Repository(repodata["category"], replace(repository[1], "__DOT__" => "."), repodata["url"])
+        end for repository in config["repos"]]
+    end
     # start the server, add the routes
     start!(ChiNAS, ip:port)
     # key
@@ -321,6 +330,18 @@ function do_command(user::NASUser, command::NASCommand{:tree}, dir::SubString ..
         dir = dir[1:length(dir) - 1]
     end
     grab_recursive_files(user.wd, dir)
+end
+
+function do_command(user::NASUser, command::NASCommand{:repos}, dir::SubString ...)
+    join((begin
+        category = repo.category
+        icondir = MANAGER.repo_dir * "$category/$(repo.name)/icon.png"
+        raw_image = "-"
+        if isfile(icondir)
+            raw_image = read(icondir, String)
+        end
+        repo.name * "|$(repo.category)|$(repo.url)|$(raw_image)"
+    end for repo in MANAGER.repos), ";")
 end
 
 function grab_recursive_files(wd::String, path::String)
