@@ -237,6 +237,14 @@ end
 
 function do_command(user::NASUser, command::NASCommand{:cd}, args::SubString ...)
     selected::String = string(args[1])
+    if selected == "~/~/" || selected == "~/"
+        user.wd = "~/"
+        return
+    end
+    if contains(selected, "~/")
+        user.wd = selected
+        return
+    end
     if selected == ".."
         if user.wd != "~/"
             wdsplit = split(user.wd, "/")
@@ -252,6 +260,7 @@ function do_command(user::NASUser, command::NASCommand{:cd}, args::SubString ...
     end
     current_dir_files = readdir(replace(user.wd, "~/" => MANAGER.home_dir * "/"))
     if ~(selected in current_dir_files)
+        println(selected)
         return("ERROR: Directory does not exist to change into.")
     end
     user.wd = user.wd * selected * "/"
