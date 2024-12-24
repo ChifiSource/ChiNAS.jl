@@ -3,6 +3,7 @@ using Toolips
 using TOML
 using ReplMaker
 using Toolips.Components
+using ZipFile
 import Base: in, getindex
 
 DLS = Base.Downloads()
@@ -25,6 +26,7 @@ mutable struct NASUser
 end
 
 mutable struct NASManager <: Toolips.AbstractExtension
+    path::String
     hostname::String
     home_dir::String
     repos::Vector{AbstractRepository}
@@ -48,13 +50,14 @@ end
 # extensions
 logger = Toolips.Logger()
 
-MANAGER = NASManager("", "", Vector{AbstractRepository}(), Vector{NASUser}(), "testpass", "")
+MANAGER = NASManager("", "", "", Vector{AbstractRepository}(), Vector{NASUser}(), "testpass", "")
 
 function host(ip::String, port::Int64; path::String = pwd(), hostname::String = "chiNAS")
     # read the path, make config, build the routes
     path = replace(path, "\\" => "/")
     MANAGER.home_dir = path * "/home/"
     MANAGER.repo_dir = path * "/repositories/"
+    MANAGER.path = path
     dir_read::Vector{String} = readdir(path)
     if ~("config.toml" in dir_read)
         config_path::String = path * "/config.toml"
@@ -69,6 +72,9 @@ function host(ip::String, port::Int64; path::String = pwd(), hostname::String = 
     end
     if ~("repositories" in dir_read)
         mkdir(MANAGER.path * "/repositories")
+    end
+    if ~("archives" in dir_read)
+        mkdir(MANAGER.path * "/archives")
     end
     config = TOML.parse(read(path * "/config.toml", String))
     # get user and repo data
@@ -156,6 +162,12 @@ function send_to_connected(line::String)
     elseif split_cmd[1] == "tree"
         response = Toolips.post("http://$(CONNECTED.ip):$(CONNECTED.port)", replace(line, " " => ";"))
         println(replace(response, ";" => "\n"))
+        return
+    elseif split_cmd[1] == "upload"
+        secondarg = split(split_cmd[2], "/")
+        secondarg = secondarg[end]
+        upload_url = Toolips.post("http://$(CONNECTED.ip):$(CONNECTED.port)", "upload;$secondarg")
+        Toolips.post("http://$(CONNECTED.ip):$(CONNECTED.port)" * upload_url, read(split_cmd[2], String) * "|!EOF")
         return
     end
     response = Toolips.post("http://$(CONNECTED.ip):$(CONNECTED.port)", replace(line, " " => ";"))
@@ -276,6 +288,32 @@ function do_command(user::NASUser, command::NASCommand{:cd}, args::SubString ...
     user.wd::String
 end
 
+function do_command(user::NASUser, command::NASCommand{:upload}, path::AbstractString, args::SubString ...)
+    route_path::String = "/" * Toolips.gen_ref(5)
+    real_fpath::String = replace(user.wd, "~/" => MANAGER.home_dir * "/") * path
+    touch(real_fpath)
+    new_r = route(route_path) do c::AbstractConnection
+        raw_file::String = get_post(c)
+        if contains(raw_file, "|!EOF")
+            raw_file = raw_file[1:end - 5]
+            open(real_fpath, "a") do o::IOStream
+               write(o, raw_file)
+            end
+            f = findfirst(r -> r.path == route_path, c.routes)
+            deleteat!(c.routes, f)
+            write!(c, ".")
+            return
+        end
+        open(real_fpath, "a") do o::IOStream
+            write(o, raw_file)
+        end
+        write!(c, ".")
+    end
+    push!(ChiNAS.routes, new_r)
+    println(route_path)
+    return(route_path)::String
+end
+
 function do_command(user::NASUser, command::NASCommand{:mkdir}, args::SubString ...)
     mkdir(replace(user.wd, "~/" => MANAGER.home_dir * "/") * args[1])
     return("made directory: $(user.wd * args[1])")
@@ -298,13 +336,38 @@ end
 
 function do_command(user::NASUser, command::NASCommand{:download}, args::SubString ...)
     route_path::String = "/" * Toolips.gen_ref(5)
+    real_path::String = replace(user.wd, "~/" => MANAGER.home_dir * "/") * args[1]
+    if isdir(real_path)
+        return(download_dir(user, real_path))
+    end
     new_r = route(route_path) do c::AbstractConnection
-        write!(c, read(replace(user.wd, "~/" => MANAGER.home_dir * "/") * args[1], String))
+        write!(c, read(real_path, String))
         f = findfirst(r -> r.path == route_path, c.routes)
         deleteat!(c.routes, f)
     end
     push!(ChiNAS.routes, new_r)
     return(route_path)::String
+end
+
+function download_dir(user::NASUser, real_path::AbstractString)
+    ref = Toolips.gen_ref(6)
+    zippath::String ="archives/$ref.zip"
+    w = ZipFile.Writer(zippath)
+    for file in grab_recursive_filepaths(real_path)
+        f = ZipFile.addfile(w, replace(file, real_path => ""))
+        open(file, "r") do io
+            Base.write(f, String(read(io)))
+        end
+    end
+    close(w)
+    new_r = route("/$ref") do c::AbstractConnection
+        write!(c, read(zippath, String))
+        f = findfirst(r -> r.path == "/$ref", c.routes)
+        deleteat!(c.routes, f)
+        rm(zippath)
+    end
+    push!(ChiNAS.routes, new_r)
+    return("/$ref")::String
 end
 
 function do_command(user::NASUser, command::NASCommand{:cp}, from::SubString, to::SubString)
@@ -342,6 +405,20 @@ function do_command(user::NASUser, command::NASCommand{:repos}, dir::SubString .
         end
         repo.name * "|$(repo.category)|$(repo.url)|$(raw_image)"
     end for repo in MANAGER.repos), ";")
+end
+
+function grab_recursive_filepaths(path::String)
+    dirs::Vector{String} = readdir(path)
+    newrs = Vector{String}()
+    [begin
+        fpath = "$path" * "/" * directory
+        if isfile(fpath)
+            push!(newrs, path * "/" * directory)
+        else
+            newrs = vcat(newrs, grab_recursive_filepaths(path * "/" * directory))
+        end
+    end for directory in dirs]
+    newrs
 end
 
 function grab_recursive_files(wd::String, path::String)
