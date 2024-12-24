@@ -91,11 +91,11 @@ function host(ip::String, port::Int64; path::String = pwd(), hostname::String = 
     # start the server, add the routes
     start!(ChiNAS, ip:port)
     # add icon routes
-    for repository in MANAGER.repos
+    for repo in MANAGER.repos
          icondir = MANAGER.repo_dir * "$(repo.category)/$(repo.name)/icon.png"
          if isfile(icondir)
-            push!(ChiNAS.routes, route(c -> write!(c, read(icondir, String)), 
-            "$(repo.category)/$(repo.name)/icon.png"))
+            push!(ChiNAS.routes, route(c::AbstractConnection -> write!(c, read(icondir, String)), 
+            "/$(repo.category)/$(repo.name)/icon.png"))
          end
     end
     # key
