@@ -90,6 +90,14 @@ function host(ip::String, port::Int64; path::String = pwd(), hostname::String = 
     end
     # start the server, add the routes
     start!(ChiNAS, ip:port)
+    # add icon routes
+    for repository in MANAGER.repos
+         icondir = MANAGER.repo_dir * "$(repo.category)/$(repo.name)/icon.png"
+         if isfile(icondir)
+            push!(ChiNAS.routes, route(c -> write!(c, read(icondir, String)), 
+            "$(repo.category)/$(repo.name)/icon.png"))
+         end
+    end
     # key
     secret::String = Toolips.gen_ref(5)
     secret_path::String = path * "/secret.txt"
@@ -310,7 +318,6 @@ function do_command(user::NASUser, command::NASCommand{:upload}, path::AbstractS
         write!(c, ".")
     end
     push!(ChiNAS.routes, new_r)
-    println(route_path)
     return(route_path)::String
 end
 
@@ -403,8 +410,72 @@ function do_command(user::NASUser, command::NASCommand{:repos}, dir::SubString .
         if isfile(icondir)
             raw_image = read(icondir, String)
         end
-        repo.name * "|$(repo.category)|$(repo.url)|$(raw_image)"
+        repo.name * "|$(repo.category)|$(repo.url)|$(Int64(isfile(icondir)))"
     end for repo in MANAGER.repos), ";")
+end
+
+function do_command(user::NASUser, command::NASCommand{:clone}, repo::String, branch::String = "master")
+    r = findfirst(rep -> rep.name == repo, NASManager.repos)
+    if isnothing(r)
+        return("ERROR: repository not found")
+    end
+    sel_repo = NASManager.repos[r]
+    return(download_dir(user, "repos/$(sel_repo.catgory)/$repo/$branch"))
+end
+
+function do_command(user::NASUser, command::NASCommand{:pull}, reponame::String)
+    r = findfirst(rep -> rep.name == repo, NASManager.repos)
+    if isnothing(r)
+        return("ERROR: repository not found")
+    end
+    sel_repo = NASManager.repos[r]
+    route_path = Toolips.gen_ref(5)
+    repo_path = "repos/$(sel_repo.cat)/$reponame/pull-$(user)-$route_path"
+    mkdir(repopath)
+    real_fpath = repopath * "/archive.zip"
+    touch(real_fpath)
+    route_path = "/" * route_path
+    new_r = route(route_path) do c::AbstractConnection
+        raw_file::String = get_post(c)
+        if contains(raw_file, "|!EOF")
+            raw_file = raw_file[1:end - 5]
+            open(real_fpath, "a") do o::IOStream
+               write(o, raw_file)
+            end
+            # here, we will need to decompress the ZIP file.
+            r = ZipFile.Reader(real_fpath)
+            for file in r.files
+                fpath = repo_path * file.name
+                touch(fpath)
+                open(fpath, "r") do o::IOStream
+                    write(o, read(file, String))
+                end
+            end
+            rm(real_fpath)
+            f = findfirst(r -> r.path == route_path, c.routes)
+            deleteat!(c.routes, f)
+            write!(c, ".")
+            return
+        end
+        open(real_fpath, "a") do o::IOStream
+            write(o, raw_file)
+        end
+        write!(c, ".")
+    end
+    push!(ChiNAS.routes, new_r)
+    return(route_path)::String
+end
+
+function do_command(user::NASUser, command::NASCommand{:merge}, dir::SubString ...)
+
+end
+
+function do_command(user::NASUser, command::NASCommand{:view}, dir::SubString ...)
+
+end
+
+function do_command(user::NASUser, command::NASCommand{:create}, dir::SubString ...)
+
 end
 
 function grab_recursive_filepaths(path::String)
